@@ -9,9 +9,11 @@ import (
 	"github.com/onsi/ginkgo/remote"
 	"github.com/onsi/ginkgo/stenographer"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -121,6 +123,32 @@ func (t *TestRunner) runGoTestSuite() bool {
 	return t.run([]string{"-test.v"}, nil, os.Stdout, nil)
 }
 
+type logWriter struct {
+	prefix string
+	buffer *bytes.Buffer
+}
+
+func newLogWriter(prefix string) *logWriter {
+	return &logWriter{
+		prefix: prefix,
+		buffer: &bytes.Buffer{},
+	}
+}
+
+func (w *logWriter) Write(data []byte) (n int, err error) {
+	w.buffer.Write(data)
+	contents := w.buffer.String()
+	lines := strings.Split(contents, "\n")
+	if len(lines) > 1 {
+		for _, line := range lines[0 : len(lines)-1] {
+			log.Printf("%s %s\n", w.prefix, line)
+		}
+	}
+	w.buffer.Reset()
+	w.buffer.Write([]byte(lines[len(lines)-1]))
+	return len(data), nil
+}
+
 func (t *TestRunner) runParallelGinkgoSuite() bool {
 	completions := make(chan bool)
 	reports := make([]*bytes.Buffer, t.numCPU)
@@ -132,7 +160,9 @@ func (t *TestRunner) runParallelGinkgoSuite() bool {
 		ginkgoArgs := config.BuildFlagArgs("ginkgo", config.GinkgoConfig, config.DefaultReporterConfig)
 		reports[cpu] = new(bytes.Buffer)
 
-		go t.run(ginkgoArgs, nil, reports[cpu], completions)
+		logWriter := newLogWriter(fmt.Sprintf("[%d]", config.GinkgoConfig.ParallelNode))
+
+		go t.run(ginkgoArgs, nil, logWriter, completions)
 	}
 
 	passed := true
@@ -141,9 +171,6 @@ func (t *TestRunner) runParallelGinkgoSuite() bool {
 		passed = <-completions && passed
 	}
 
-	for _, report := range reports {
-		fmt.Print(report.String())
-	}
 	os.Stdout.Sync()
 
 	return passed
